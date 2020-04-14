@@ -36,7 +36,7 @@ public class BatchHandler extends RetryCallable
 	private final boolean m_allignDatapointTtl;
 	private final boolean m_forceDefaultDatapointTtl;
 	private final DataCache<DataPointsRowKey> m_rowKeyCache;
-	private final DataCache<String> m_metricNameCache;
+	private final DataCache<TimedString> m_metricNameCache;
 	private final CassandraModule.CQLBatchFactory m_cqlBatchFactory;
 	private final Publisher<RowKeyEvent> m_rowKeyPublisher;
 	private final Publisher<BatchReductionEvent> m_batchReductionPublisher;
@@ -49,7 +49,7 @@ public class BatchHandler extends RetryCallable
 			@Assisted EventCompletionCallBack callBack,
 			CassandraConfiguration configuration,
 			DataCache<DataPointsRowKey> rowKeyCache,
-			DataCache<String> metricNameCache,
+			DataCache<TimedString> metricNameCache,
 			FilterEventBus eventBus,
 			CassandraModule.CQLBatchFactory cqlBatchFactory,
 			RowTimeService rowTimeService)
@@ -81,8 +81,12 @@ public class BatchHandler extends RetryCallable
 			count++;
 
 			String metricName = event.getMetricName();
-				/*if (metricName.startsWith("blast"))
-					continue;*/
+			if (metricName.length() == 0)
+			{
+				logger.warn(
+						"Attempted to add empty metric name to string index. Row looks like: " + event.getDataPoint()
+				);
+			}
 
 			ImmutableSortedMap<String, String> tags = event.getTags();
 			DataPoint dataPoint = event.getDataPoint();
@@ -118,9 +122,6 @@ public class BatchHandler extends RetryCallable
 			}
 			
 			DataRowTimeService thisQueryRTS = m_rowTimeService.forMetric(metricName);
-			
-			//Row key will expire after the data in the row expires
-			int rowKeyTtl = (ttl == 0) ? 0 : ttl + ((int) (thisQueryRTS.getRowDurationMillis() / 1000)); // TODO RGS query - double check this
 
 			long rowTime = thisQueryRTS.calculateRowTimeStart(dataPoint);
 
@@ -130,29 +131,30 @@ public class BatchHandler extends RetryCallable
 			logger.warn("rowKey: {}", rowKey);
 			
 			//Write out the row key if it is not cached
-			DataPointsRowKey cachedKey = m_rowKeyCache.cacheItem(rowKey);
-			if (cachedKey == null)
+			DataPointsRowKey cachedRowKey = m_rowKeyCache.cacheItem(rowKey);
+			if (cachedRowKey == null)
 			{
-				batch.addRowKey(metricName, rowKey, rowKeyTtl);
+				cachedRowKey = rowKey;
 
-				m_rowKeyPublisher.post(new RowKeyEvent(metricName, rowKey, rowKeyTtl));
-			}
-			else
-				rowKey = cachedKey;
+				//Row key will expire after the data in the row expires
+				int rowKeyTtl = (ttl == 0) ? 0 : ttl + ((int) (thisQueryRTS.getRowDurationMillis() / 1000));
 
-			//Write metric name if not in cache
-			String cachedName = m_metricNameCache.cacheItem(metricName);
-			if (cachedName == null)
-			{
-				if (metricName.length() == 0)
+				batch.addRowKey(cachedRowKey, rowKeyTtl);
+
+				String cachedName = cachedRowKey.getMetricName();
+
+
+				m_rowKeyPublisher.post(new RowKeyEvent(cachedName, cachedRowKey, rowKeyTtl));
+
+				TimedString metricNameTime = new TimedString(cachedName, rowTime);
+
+				TimedString cacheName = m_metricNameCache.cacheItem(metricNameTime);
+				if (cacheName == null)
 				{
-					logger.warn(
-							"Attempted to add empty metric name to string index. Row looks like: " + dataPoint
-					);
+					batch.addMetricName(metricNameTime);
+					batch.addTimeIndex(metricNameTime.getString(), cachedRowKey.getTimestamp(), rowKeyTtl);
 				}
-				batch.addMetricName(metricName);
 			}
-
 
 			int columnTime = thisQueryRTS.getColumnTimeOffset(rowTime, dataPoint.getTimestamp());
 
@@ -166,7 +168,7 @@ public class BatchHandler extends RetryCallable
 	{
 		if (batch != null)
 		{
-			for (String newMetric : batch.getNewMetrics())
+			for (TimedString newMetric : batch.getNewMetrics())
 			{
 				m_metricNameCache.removeKey(newMetric);
 			}
