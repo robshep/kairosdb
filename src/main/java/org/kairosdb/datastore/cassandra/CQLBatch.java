@@ -176,7 +176,7 @@ public class CQLBatch
 		boundStatement.setBytesUnsafe(1, b);
 		boundStatement.setBytesUnsafe(2, ByteBuffer.wrap(kDataOutput.getBytes()));
 		boundStatement.setInt(3, ttl);
-		boundStatement.setLong(4, m_now);
+		boundStatement.setLong(4, m_now); // CQL TIMESTAMP is always in milliseconds, even if our row resolution is something else.
 		boundStatement.setConsistencyLevel(m_consistencyLevel);
 		boundStatement.setIdempotent(true);
 

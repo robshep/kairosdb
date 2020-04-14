@@ -51,6 +51,9 @@ public class CassandraConfiguration
 	public static final String LOCAL_DATACENTER = "kairosdb.datastore.cassandra.local_datacenter";
 
 	public static final String START_ASYNC = "kairosdb.datastore.cassandra.start_async";
+	
+	public static final String DATA_TIME_RESOLUTION = "kairosdb.datastore.cassandra.data_time_resolution";
+	public static final String DATA_TABLE_ROW_WIDTH = "kairosdb.datastore.cassandra.data_table_row_width";
 
 
 	@Inject(optional = true)
@@ -110,6 +113,14 @@ public class CassandraConfiguration
 	@Inject
 	@Named(START_ASYNC)
 	private boolean m_startAsync = false;
+	
+	@Inject(optional=true)
+	@Named(DATA_TIME_RESOLUTION)
+	private Long m_dataTimeResolution;
+	
+	@Inject(optional=true)
+	@Named(DATA_TABLE_ROW_WIDTH)
+	private Long m_dataTableRowWidth;
 
 	private final Map<String, String> m_createWithConfig;
 
@@ -153,6 +164,7 @@ public class CassandraConfiguration
 		}
 	}
 
+	 
 
 	public int getDatapointTtl()
 	{
@@ -227,5 +239,13 @@ public class CassandraConfiguration
 	public String getCreateWithConfig(String tableName)
 	{
 		return m_createWithConfig.getOrDefault(tableName, "");
+	}
+	
+	public Long getDataTimeResolution() {
+		return m_dataTimeResolution;
+	}
+	
+	public Long getDataTableRowWidth() {
+		return m_dataTableRowWidth;
 	}
 }

@@ -42,6 +42,8 @@ public class BatchHandlerTest
 	private Publisher<BatchReductionEvent> m_batchReductionEventPublisher;
 	private CassandraModule.CQLBatchFactory m_cqlBatchFactory;
 
+	private RowTimeService m_rowTimeService = RowTimeService.getDefault();
+
 
 	private class FakeCQLBatch extends CQLBatch
 	{
@@ -108,7 +110,7 @@ public class BatchHandlerTest
 
 		m_rowKeyDataCache = new DataCache<>(1000);
 		m_metricDataCache = new DataCache<>(1000);
-
+		
 		KairosRootConfig rootConfig = new KairosRootConfig();
 		//todo setup stuff
 		rootConfig.load(ImmutableMap.of("kairosdb.datastore.cassandra.write_cluster", new HashMap()));
@@ -119,7 +121,8 @@ public class BatchHandlerTest
 				m_rowKeyDataCache,
 				m_metricDataCache,
 				eventBus,
-				m_cqlBatchFactory);
+				m_cqlBatchFactory,
+				m_rowTimeService);
 	}
 
 

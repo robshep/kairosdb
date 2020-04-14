@@ -16,7 +16,10 @@ import org.quartz.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.base.Stopwatch;
+
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static com.google.common.base.Preconditions.checkState;
 
@@ -83,9 +86,9 @@ public class RollUpJob implements InterruptableJob
 					boolean success = true;
 					try
 					{
-						long executionStartTime = System.currentTimeMillis();
+						Stopwatch timer = Stopwatch.createStarted();
 						long dpCount = processor.process(statusStore, task, queryMetric, rollup.getTimeZone());
-						long executionLength = System.currentTimeMillis() - executionStartTime;
+						long executionLength = timer.stop().elapsed(TimeUnit.MILLISECONDS);
 						status.addStatus(RollupTaskStatus.createQueryMetricStatus(queryMetric.getName(), System.currentTimeMillis(), dpCount, executionLength));
 					}
 					catch (DatastoreException e)
@@ -112,7 +115,7 @@ public class RollUpJob implements InterruptableJob
 							ThreadReporter.addTag("rollup", rollup.getSaveAs());
 							ThreadReporter.addTag("rollup-task", task.getName());
 							ThreadReporter.addTag("status", success ? "success" : "failure");
-							ThreadReporter.addDataPoint(ROLLUP_TIME, System.currentTimeMillis() - ThreadReporter.getReportTime());
+							ThreadReporter.addDataPoint(ROLLUP_TIME, System.currentTimeMillis() - ThreadReporter.getReportTime()); // TODO rgs to query.... this looks like it was init-ed a few lines ago? 
 							ThreadReporter.submitData(longDataPointFactory, stringDataPointFactory, publisher);
 						}
 						catch (DatastoreException e)

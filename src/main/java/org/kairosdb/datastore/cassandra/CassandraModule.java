@@ -264,6 +264,25 @@ public class CassandraModule extends AbstractModule
 	{
 		return new DataCache<>(configuration.getStringCacheSize());
 	}
+	
+	@Provides
+	@Singleton
+	RowTimeService getRowTimeService(CassandraConfiguration conf)
+	{
+		Long timeRes = conf.getDataTimeResolution();
+		Long rowWidth = conf.getDataTableRowWidth();
+		
+		if(timeRes == null && rowWidth == null) {
+			// default legacy setting: 3wks@1ms
+			return RowTimeService.getDefault();
+		}
+		
+		if(timeRes == null || rowWidth == null) {
+			throw new IllegalArgumentException("must set BOTH time_resoluton AND row_width (or leave blank for standard 1ms setup)");
+		}
+		
+		return new RowTimeService(timeRes, rowWidth);
+	}
 
 	public interface BatchHandlerFactory
 	{

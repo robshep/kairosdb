@@ -5,6 +5,7 @@ import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.ResultSetFuture;
 import com.datastax.driver.core.Row;
 import com.datastax.driver.core.Statement;
+import com.google.common.base.Stopwatch;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.SetMultimap;
 import com.google.common.util.concurrent.Futures;
@@ -15,8 +16,10 @@ import com.google.inject.name.Named;
 import org.kairosdb.core.exception.DatastoreException;
 import org.kairosdb.core.reporting.ThreadReporter;
 
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 import static org.kairosdb.core.KairosConfigProperties.QUERIES_REGEX_PREFIX;
@@ -34,6 +37,7 @@ public class CQLFilteredRowKeyIterator implements Iterator<DataPointsRowKey>
 	private int m_rawRowKeyCount = 0;
 	private Map<String, Pattern> m_patternFilter;
 	private Set<DataPointsRowKey> m_returnedKeys;  //keep from returning duplicates, querying old and new indexes
+	private RowTimeService m_rowTimeService;
 
 
 	@Inject
@@ -43,8 +47,11 @@ public class CQLFilteredRowKeyIterator implements Iterator<DataPointsRowKey>
 			@Assisted("startTime") long startTime,
 			@Assisted("endTime") long endTime,
 			@Assisted SetMultimap<String, String> filterTags,
-			@Named(QUERIES_REGEX_PREFIX) String regexPrefix) throws DatastoreException
+			@Named(QUERIES_REGEX_PREFIX) String regexPrefix,
+			RowTimeService rowTimeService
+			) throws DatastoreException
 	{
+		m_rowTimeService = rowTimeService;
 		m_filterTags = HashMultimap.create();
 		m_filterTagNames = new HashSet<>();
 		m_patternFilter = new HashMap<>();
@@ -78,7 +85,7 @@ public class CQLFilteredRowKeyIterator implements Iterator<DataPointsRowKey>
 		m_clusterName = cluster.getClusterName();
 		List<ListenableFuture<ResultSet>> futures = new ArrayList<>();
 		m_returnedKeys = new HashSet<>();
-		long timerStart = System.currentTimeMillis();
+		Stopwatch timer = Stopwatch.createStarted();
 
 		//Legacy key index - index is all in one row
 		if ((startTime < 0) && (endTime >= 0))
@@ -131,7 +138,7 @@ public class CQLFilteredRowKeyIterator implements Iterator<DataPointsRowKey>
 			if (m_resultSets.hasNext())
 				m_currentResultSet = m_resultSets.next();
 
-			ThreadReporter.addDataPoint(CassandraDatastore.KEY_QUERY_TIME, System.currentTimeMillis() - timerStart);
+			ThreadReporter.addDataPoint(CassandraDatastore.KEY_QUERY_TIME, timer.stop().elapsed(TimeUnit.MILLISECONDS));
 		}
 		catch (InterruptedException e)
 		{
@@ -213,7 +220,7 @@ outer:
 			BoundStatement statement = new BoundStatement(cluster.psRowKeyTimeQuery);
 			statement.setString(0, metricName);
 			statement.setString(1, DATA_POINTS_TABLE_NAME);
-			statement.setTimestamp(2, new Date(CassandraDatastore.calculateRowTime(startTime)));
+			statement.setTimestamp(2, new Date(m_rowTimeService.forMetric(metricName).calculateRowTimeStart(startTime)));
 			statement.setTimestamp(3, new Date(endTime));
 			statement.setConsistencyLevel(cluster.getReadConsistencyLevel());
 
@@ -235,10 +242,10 @@ outer:
 			String metricName, long startTime, long endTime)
 	{
 		DataPointsRowKey startKey = new DataPointsRowKey(metricName, m_clusterName,
-				CassandraDatastore.calculateRowTime(startTime), "");
+				m_rowTimeService.forMetric(metricName).calculateRowTimeStart(startTime), "");
 
 		DataPointsRowKey endKey = new DataPointsRowKey(metricName, m_clusterName,
-				CassandraDatastore.calculateRowTime(endTime), "");
+				m_rowTimeService.forMetric(metricName).calculateRowTimeStart(endTime), "");
 		endKey.setEndSearchKey(true);
 
 		boundStatement.setBytesUnsafe(1, CassandraDatastore.DATA_POINTS_ROW_KEY_SERIALIZER.toByteBuffer(startKey));

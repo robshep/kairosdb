@@ -80,6 +80,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 
 import static java.util.Objects.requireNonNull;
 import static org.kairosdb.datastore.cassandra.ClusterConnection.DATA_POINTS_TABLE_NAME;
@@ -94,8 +95,6 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 
 	public static final DataPointsRowKeySerializer DATA_POINTS_ROW_KEY_SERIALIZER = new DataPointsRowKeySerializer();
 
-
-	public static final long ROW_WIDTH = 1814400000L; //3 Weeks wide
 	public static final long MAX_CQL_BATCH_SIZE = 10000;
 
 	public static final String KEY_QUERY_TIME = "kairosdb.datastore.cassandra.key_query_time";
@@ -139,6 +138,8 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 	@Named("kairosdb.queue_processor.batch_size")
 	private int m_batchSize;  //Used for batching delete requests
 
+	private RowTimeService m_rowtimeService;
+
 
 	@Inject
 	public CassandraDatastore(
@@ -152,7 +153,8 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 			CassandraModule.BatchHandlerFactory batchHandlerFactory,
 			CassandraModule.DeleteBatchHandlerFactory deleteBatchHandlerFactory,
 			CassandraModule.CQLFilteredRowKeyIteratorFactory rowKeyFilterFactory,
-			CassandraModule.CQLBatchFactory cqlBatchFactory
+			CassandraModule.CQLBatchFactory cqlBatchFactory,
+			RowTimeService rowtimeService
 			) throws DatastoreException
 	{
 		//m_astyanaxClient = astyanaxClient;
@@ -169,6 +171,9 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 		m_readClusters = readClusters;
 
 		m_cqlBatchFactory = cqlBatchFactory;
+		this.m_rowtimeService = rowtimeService;
+		
+		
 
 		ImmutableMap.Builder<String, ClusterConnection> builder = ImmutableMap.builder();
 		builder.put(m_writeCluster.getClusterName(), m_writeCluster);
@@ -202,7 +207,7 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 
 	public void cleanRowKeyCache()
 	{
-		long currentRow = calculateRowTime(System.currentTimeMillis());
+		long currentRow = m_rowtimeService.forMetric("*any user data*").getRowTimeNow();
 
 		Set<DataPointsRowKey> keys = m_rowKeyCache.getCachedKeys();
 
@@ -645,7 +650,7 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 						int columnTime = bytes.getInt();
 
 						ByteBuffer value = row.getBytes(1);
-						long timestamp = getColumnTimestamp(m_rowKey.getTimestamp(), columnTime);
+						long timestamp = m_rowtimeService.forMetric(m_rowKey.getMetricName()).getColumnRealTimestamp(m_rowKey.getTimestamp(), columnTime);
 
 						//If type is legacy type it will point to the same object, no need for equals
 						if (m_rowKey.getDataType() == LegacyDataPointFactory.DATASTORE_TYPE)
@@ -721,6 +726,8 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 		//Controls the number of queries sent out at the same time.
 		Semaphore querySemaphore = new Semaphore(m_cassandraConfiguration.getSimultaneousQueries());
 
+		DataRowTimeService thisQueryRTS = m_rowtimeService.forMetric(query.getName());
+		
 		while (rowKeys.hasNext())
 		{
 			rowCount ++;
@@ -731,12 +738,12 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 			if (queryStartTime < tierRowTime)
 				startTime = 0;
 			else
-				startTime = getColumnName(tierRowTime, queryStartTime);
+				startTime = thisQueryRTS.getColumnTimeOffset(tierRowTime, queryStartTime);
 
-			if (queryEndTime > (tierRowTime + ROW_WIDTH))
-				endTime = getColumnName(tierRowTime, tierRowTime + ROW_WIDTH) +1;
+			if (queryEndTime > (tierRowTime + thisQueryRTS.getRowDurationMillis()))
+				endTime = thisQueryRTS.getColumnTimeOffset(tierRowTime, tierRowTime + thisQueryRTS.getRowDurationMillis()) +1;
 			else
-				endTime = getColumnName(tierRowTime, queryEndTime) +1; //add 1 so we get 0x1 for last bit
+				endTime = thisQueryRTS.getColumnTimeOffset(tierRowTime, queryEndTime) +1; //add 1 so we get 0x1 for last bit
 
 			ByteBuffer startBuffer = ByteBuffer.allocate(4);
 			startBuffer.putInt(startTime);
@@ -820,7 +827,7 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 			throw new DatastoreException(queryMonitor.getException());
 	}
 
-	private void deletePartialRow(DataPointsRowKey rowKey, long start, long end) throws DatastoreException
+	private void deletePartialRow(DataPointsRowKey rowKey, long timestampStart, long timestampEnd) throws DatastoreException
 	{
 		queryClusters((cluster) ->
 		{
@@ -829,12 +836,12 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 				BoundStatement statement = new BoundStatement(cluster.psDataPointsDeleteRange);
 				statement.setBytesUnsafe(0, DATA_POINTS_ROW_KEY_SERIALIZER.toByteBuffer(rowKey));
 				ByteBuffer b = ByteBuffer.allocate(4);
-				b.putInt(getColumnName(rowKey.getTimestamp(), start));
+				b.putInt(m_rowtimeService.forMetric(rowKey.getMetricName()).getColumnTimeOffset(rowKey.getTimestamp(), timestampStart));
 				b.rewind();
 				statement.setBytesUnsafe(1, b);
 
 				b = ByteBuffer.allocate(4);
-				b.putInt(getColumnName(rowKey.getTimestamp(), end));
+				b.putInt(m_rowtimeService.forMetric(rowKey.getMetricName()).getColumnTimeOffset(rowKey.getTimestamp(), timestampEnd));
 				b.rewind();
 				statement.setBytesUnsafe(2, b);
 
@@ -844,7 +851,7 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 			else
 			{
 				//note, with multiple old clusters this query could be done multiple times
-				DatastoreMetricQuery deleteQuery = new QueryMetric(start, end, 0,
+				DatastoreMetricQuery deleteQuery = new QueryMetric(timestampStart, timestampEnd, 0,
 						rowKey.getMetricName());
 
 				cqlQueryWithRowKeys(deleteQuery, new DeletingCallback(deleteQuery.getName()),
@@ -873,7 +880,10 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 			DataPointsRowKey rowKey = rowKeyIterator.next();
 			//System.out.println("Deleting from row "+rowKey);
 			long rowKeyTimestamp = rowKey.getTimestamp();
-			if (deleteQuery.getStartTime() <= rowKeyTimestamp && (deleteQuery.getEndTime() >= rowKeyTimestamp + ROW_WIDTH - 1))
+			
+			DataRowTimeService rts = m_rowtimeService.forMetric(rowKey.getMetricName());
+			
+			if (deleteQuery.getStartTime() <= rowKeyTimestamp && (deleteQuery.getEndTime() >= rowKeyTimestamp + m_rowtimeService.forMetric(deleteQuery.getName()).getRowDurationMillis() - 1))
 			{
 				queryClusters((cluster) ->
 						{
@@ -920,14 +930,14 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 				//deletePartialRow(rowKey, 0, getColumnName(rowKeyTimestamp, deleteQuery.getEndTime()));
 				deletePartialRow(rowKey, rowKeyTimestamp, deleteQuery.getEndTime());
 			}
-			else if (deleteQuery.getEndTime() >= rowKeyTimestamp + ROW_WIDTH -1)
+			else if (deleteQuery.getEndTime() >= rowKeyTimestamp + rts.getRowDurationMillis() -1)
 			{
 				//System.out.println("Delete last of row");
 				//Delete last portion of row
 				//deletePartialRow(rowKey, getColumnName(rowKeyTimestamp, deleteQuery.getStartTime()),
 				//		getColumnName(rowKeyTimestamp, rowKeyTimestamp + ROW_WIDTH - 1));
 				deletePartialRow(rowKey, deleteQuery.getStartTime(),
-						rowKeyTimestamp + ROW_WIDTH - 1);
+						rowKeyTimestamp + rts.getRowDurationMillis() - 1);
 			}
 			else
 			{
@@ -1037,11 +1047,6 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 		return (ret);
 	}
 
-	public static long calculateRowTime(long timestamp)
-	{
-		return (timestamp - (Math.abs(timestamp) % ROW_WIDTH));
-	}
-
 
 	/**
 	 This is just for the delete operation of old data points.
@@ -1050,34 +1055,7 @@ public class CassandraDatastore implements Datastore, ProcessorHandler, KairosMe
 	 @param isInteger
 	 @return
 	 */
-	@SuppressWarnings("PointlessBitwiseExpression")
-	private static int getColumnName(long rowTime, long timestamp, boolean isInteger)
-	{
-		int ret = (int) (timestamp - rowTime);
-
-		if (isInteger)
-			return ((ret << 1) | LONG_FLAG);
-		else
-			return ((ret << 1) | FLOAT_FLAG);
-
-	}
-
-	@SuppressWarnings("PointlessBitwiseExpression")
-	public static int getColumnName(long rowTime, long timestamp)
-	{
-		int ret = (int) (timestamp - rowTime);
-
-		/*
-			The timestamp is shifted to support legacy datapoints that
-			used the extra bit to determine if the value was long or double
-		 */
-		return (ret << 1);
-	}
-
-	public static long getColumnTimestamp(long rowTime, int columnName)
-	{
-		return (rowTime + (long) (columnName >>> 1));
-	}
+	
 
 	public static boolean isLongValue(int columnName)
 	{

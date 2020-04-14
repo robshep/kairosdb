@@ -22,6 +22,7 @@ import ch.qos.logback.core.filter.Filter;
 import ch.qos.logback.core.spi.FilterReply;
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
+import com.google.common.base.Stopwatch;
 import com.google.common.io.Files;
 import com.google.gson.Gson;
 import com.google.inject.Binding;
@@ -455,7 +456,7 @@ public class Main
 		{
 			KairosDatastore ds = m_injector.getInstance(KairosDatastore.class);
 
-			long start = System.currentTimeMillis();
+			Stopwatch stopwatch = Stopwatch.createStarted();
 			int I;
 
 			for (I = 0; I < 100000; I++)
@@ -466,8 +467,7 @@ public class Main
 				query.close();
 			}
 
-			long stop = System.currentTimeMillis();
-			long time = stop - start;
+			long time = stopwatch.stop().elapsed().toMillis();
 			System.out.println(time);
 			System.out.println((I * 1000) / time);
 

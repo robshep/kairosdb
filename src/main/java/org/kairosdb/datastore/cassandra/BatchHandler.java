@@ -22,10 +22,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
-import static org.kairosdb.datastore.cassandra.CassandraDatastore.ROW_WIDTH;
-import static org.kairosdb.datastore.cassandra.CassandraDatastore.calculateRowTime;
-import static org.kairosdb.datastore.cassandra.CassandraDatastore.getColumnName;
-
 /**
  Created by bhawkins on 1/11/17.
  */
@@ -45,6 +41,7 @@ public class BatchHandler extends RetryCallable
 	private final Publisher<RowKeyEvent> m_rowKeyPublisher;
 	private final Publisher<BatchReductionEvent> m_batchReductionPublisher;
 	private final String m_clusterName;
+	private RowTimeService m_rowTimeService;
 
 	@Inject
 	public BatchHandler(
@@ -54,7 +51,8 @@ public class BatchHandler extends RetryCallable
 			DataCache<DataPointsRowKey> rowKeyCache,
 			DataCache<String> metricNameCache,
 			FilterEventBus eventBus,
-			CassandraModule.CQLBatchFactory cqlBatchFactory)
+			CassandraModule.CQLBatchFactory cqlBatchFactory,
+			RowTimeService rowTimeService)
 	{
 		m_events = events;
 		m_callBack = callBack;
@@ -66,6 +64,8 @@ public class BatchHandler extends RetryCallable
 		m_metricNameCache = metricNameCache;
 
 		m_cqlBatchFactory = cqlBatchFactory;
+		m_rowTimeService = rowTimeService;
+
 
 		m_rowKeyPublisher = eventBus.createPublisher(RowKeyEvent.class);
 		m_batchReductionPublisher = eventBus.createPublisher(BatchReductionEvent.class);
@@ -117,14 +117,18 @@ public class BatchHandler extends RetryCallable
 				}
 			}
 			
-			//Row key will expire 3 weeks after the data in the row expires
-			int rowKeyTtl = (ttl == 0) ? 0 : ttl + ((int) (ROW_WIDTH / 1000));
+			DataRowTimeService thisQueryRTS = m_rowTimeService.forMetric(metricName);
+			
+			//Row key will expire after the data in the row expires
+			int rowKeyTtl = (ttl == 0) ? 0 : ttl + ((int) (thisQueryRTS.getRowDurationMillis() / 1000)); // TODO RGS query - double check this
 
-			long rowTime = calculateRowTime(dataPoint.getTimestamp());
+			long rowTime = thisQueryRTS.calculateRowTimeStart(dataPoint);
 
 			rowKey = new DataPointsRowKey(metricName, m_clusterName, rowTime, dataPoint.getDataStoreDataType(),
 					tags);
 
+			logger.warn("rowKey: {}", rowKey);
+			
 			//Write out the row key if it is not cached
 			DataPointsRowKey cachedKey = m_rowKeyCache.cacheItem(rowKey);
 			if (cachedKey == null)
@@ -150,8 +154,10 @@ public class BatchHandler extends RetryCallable
 			}
 
 
-			int columnTime = getColumnName(rowTime, dataPoint.getTimestamp());
+			int columnTime = thisQueryRTS.getColumnTimeOffset(rowTime, dataPoint.getTimestamp());
 
+			logger.warn("columnName: {}", columnTime);
+			
 			batch.addDataPoint(rowKey, columnTime, dataPoint, ttl);
 		}
 	}

@@ -33,6 +33,8 @@ import org.kairosdb.core.datastore.QueryMetric;
 import org.kairosdb.core.exception.DatastoreException;
 import org.kairosdb.core.groupby.TagGroupBy;
 import org.kairosdb.datastore.cassandra.CassandraDatastore;
+import org.kairosdb.datastore.cassandra.DataRowTimeService;
+import org.kairosdb.datastore.cassandra.RowTimeService;
 import org.kairosdb.eventbus.EventBusConfiguration;
 import org.kairosdb.eventbus.FilterEventBus;
 import org.kairosdb.eventbus.Publisher;
@@ -836,9 +838,10 @@ public abstract class DatastoreTestHelper
 	@Test
 	public void test_deleteTimeWindowWithTag() throws DatastoreException, InterruptedException
 	{
-		QueryMetric query = new QueryMetric(s_startTime - CassandraDatastore.ROW_WIDTH, 0, "double_delete");
+		DataRowTimeService defaultRowTimeService = RowTimeService.DEFAULT_3wks1ms;
+		QueryMetric query = new QueryMetric(s_startTime - defaultRowTimeService.getRowDurationMillis(), 0, "double_delete");
 		query.setTags(ImmutableMap.of("tag", "1"));
-		query.setEndTime(s_startTime + CassandraDatastore.ROW_WIDTH);
+		query.setEndTime(s_startTime + defaultRowTimeService.getRowDurationMillis());
 
 		s_datastore.delete(query);
 

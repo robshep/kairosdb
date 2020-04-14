@@ -1,10 +1,16 @@
 package org.kairosdb.datastore.cassandra;
 
+import org.apache.commons.codec.DecoderException;
+import org.apache.commons.codec.binary.Hex;
 import org.junit.Test;
 import org.kairosdb.core.datapoints.LegacyDataPointFactory;
+import org.kairosdb.core.datapoints.LongDataPointFactory;
+import org.kairosdb.core.datapoints.LongDataPointFactoryImpl;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.SortedMap;
 import java.util.TreeMap;
 
@@ -14,6 +20,21 @@ import static org.junit.Assert.assertThat;
 public class DataPointsRowKeySerializerTest
 {
 	public static final Charset UTF8 = Charset.forName("UTF-8");
+	
+	@Test
+	public void test_deserialiseRowKey() throws DecoderException
+	{
+		ByteBuffer rowKeyBytes = ByteBuffer.wrap(Hex.decodeHex("702e3764343965356633322e393832313764663638642e6d65616e696e67000000004dbafca000000b6b6169726f735f6c6f6e676163633d31323334353a7a6f6e653d313a".toCharArray()));
+		
+		DataPointsRowKeySerializer serializer = new DataPointsRowKeySerializer();
+
+		DataPointsRowKey rowKey = serializer.fromByteBuffer(rowKeyBytes, "default");
+
+		assertThat(rowKey.getMetricName(), equalTo("p.7d49e5f32.98217df68d.meaning"));
+		assertThat(rowKey.getDataType(), equalTo(LongDataPointFactoryImpl.DST_LONG));
+		assertThat(rowKey.getTimestamp(), equalTo(LocalDateTime.of(1980, 7, 31, 0, 0, 0).atZone(ZoneId.of("UTC")).toEpochSecond()*1000));
+	
+	}
 
 	@Test
 	public void test_toByteBuffer_oldFormat()

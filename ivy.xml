@@ -124,6 +124,7 @@
 		<dependency org="com.codahale.metrics" name="metrics-jvm" rev="3.0.2"/>
 
 		<dependency org="org.testng" name="testng" rev="6.8.5" conf="integration->default"/>
+		<dependency org="org.testcontainers" name="cassandra" rev="1.13.0" conf="test->default" />
 
 		<!-- Dependencies removed in jdk9 -->
 		<dependency org="javax.xml.bind" name="jaxb-api" rev="2.3.0" conf="jdk11->default;testjdk11->default"/>
